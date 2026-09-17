@@ -13,6 +13,20 @@ function nextId(scores) {
   return scores.reduce((max, row) => Math.max(max, Number(row.id) || 0), 0) + 1;
 }
 
+function getScoresStore() {
+  const siteID = process.env.NETLIFY_SITE_ID;
+  const token = process.env.NETLIFY_AUTH_TOKEN;
+  if (!siteID || !token) {
+    throw new Error("Missing NETLIFY_SITE_ID or NETLIFY_AUTH_TOKEN");
+  }
+  return getStore({
+    name: "chandana-chase-scores",
+    siteID,
+    token,
+    consistency: "strong",
+  });
+}
+
 const headers = {
   "Content-Type": "application/json",
   "Access-Control-Allow-Origin": "*",
@@ -26,7 +40,7 @@ exports.handler = async (event) => {
   }
 
   try {
-    const store = getStore("chandana-chase-scores");
+    const store = getScoresStore();
     const scores = (await store.get("all", { type: "json" })) || [];
 
     if (event.httpMethod === "GET") {
