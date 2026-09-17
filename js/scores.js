@@ -24,13 +24,23 @@
     return String(message || "").trim().slice(0, 280);
   }
 
-  function makeEntry(seconds, message) {
+  function makeEntry(seconds, message, extra) {
     return {
+      id: extra && extra.id,
       seconds: Number(seconds),
       time: formatTime(seconds),
-      at: new Date().toISOString(),
+      at: (extra && extra.at) || new Date().toISOString(),
       message: cleanMessage(message),
     };
+  }
+
+  function upsertLocal(entry) {
+    const local = readLocal();
+    const idx = entry.id != null ? local.findIndex((row) => row.id === entry.id) : -1;
+    if (idx >= 0) local[idx] = { ...local[idx], ...entry };
+    else local.unshift(entry);
+    writeLocal(local);
+    return local;
   }
 
   async function request(method, body) {
@@ -42,8 +52,7 @@
           body: body ? JSON.stringify(body) : undefined,
         });
         if (!res.ok) continue;
-        const data = await res.json();
-        if (Array.isArray(data)) return data;
+        return await res.json();
       } catch (_) {
         /* local file server or missing function */
       }
@@ -51,20 +60,40 @@
     return null;
   }
 
+  function rowsFrom(remote, fallback) {
+    if (Array.isArray(remote)) return remote;
+    if (remote && Array.isArray(remote.rows)) return remote.rows;
+    return fallback;
+  }
+
   window.ChaseScores = {
     formatTime,
     readLocal,
     async save(seconds, message) {
       const entry = makeEntry(seconds, message);
-      const local = readLocal();
-      local.unshift(entry);
-      writeLocal(local);
+      const local = upsertLocal(entry);
       const remote = await request("POST", { seconds: entry.seconds, message: entry.message });
-      return remote || local;
+      const saved = remote && remote.entry ? remote.entry : entry;
+      if (saved.id != null) upsertLocal(saved);
+      return { entry: saved, rows: rowsFrom(remote, local), remote: Boolean(remote && remote.entry) };
+    },
+    async update(id, message) {
+      const note = cleanMessage(message);
+      const local = readLocal();
+      const idx = local.findIndex((row) => row.id === id);
+      if (idx >= 0) {
+        local[idx].message = note;
+        writeLocal(local);
+      }
+      const remote = await request("PATCH", { id, message: note });
+      const saved = remote && remote.entry ? remote.entry : local[idx];
+      if (saved) upsertLocal(saved);
+      return { entry: saved, rows: rowsFrom(remote, local), remote: Boolean(remote && remote.entry) };
     },
     async all() {
       const remote = await request("GET");
-      if (remote) return { rows: remote, remote: true };
+      if (Array.isArray(remote)) return { rows: remote, remote: true };
+      if (remote && Array.isArray(remote.rows)) return { rows: remote.rows, remote: true };
       return { rows: readLocal(), remote: false };
     },
   };

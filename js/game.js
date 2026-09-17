@@ -49,6 +49,8 @@
   const winTimeEl = document.getElementById("win-time");
   const winBestEl = document.getElementById("win-best");
   const winMessageEl = document.getElementById("win-message");
+  const winMessageBtn = document.getElementById("message-btn");
+  const winNoteStatus = document.getElementById("win-note-status");
 
   const keys = Object.create(null);
   const joy = { x: 0, y: 0, active: false, pointerId: null };
@@ -60,6 +62,9 @@
   let running = false;
   let won = false;
   let pendingScore = null;
+  let savedScoreId = null;
+  let savePromise = null;
+  let messageSent = false;
   let hugTimer = 0;
   let elapsed = 0;
   let ground = null;
@@ -796,7 +801,15 @@
     const prev = Number(localStorage.getItem(bestKey) || 0);
     if (!prev || elapsed < prev) localStorage.setItem(bestKey, String(elapsed));
     pendingScore = elapsed;
+    savedScoreId = null;
+    messageSent = false;
+    savePromise = persistCatch(elapsed);
     if (winMessageEl) winMessageEl.value = "";
+    setNoteStatus("");
+    if (winMessageBtn) {
+      winMessageBtn.disabled = false;
+      winMessageBtn.textContent = "Submit";
+    }
     const best = Number(localStorage.getItem(bestKey) || elapsed);
     winTimeEl.textContent = formatTime(elapsed);
     winBestEl.textContent = formatTime(best);
@@ -1608,16 +1621,77 @@
     el.classList.toggle("hidden", bits.length === 0);
   }
 
-  function flushPendingScore() {
-    if (pendingScore == null || !window.ChaseScores) return;
-    const message = winMessageEl ? winMessageEl.value : "";
-    window.ChaseScores.save(pendingScore, message);
-    pendingScore = null;
-    if (winMessageEl) winMessageEl.value = "";
+  function setNoteStatus(text) {
+    if (!winNoteStatus) return;
+    winNoteStatus.textContent = text || "";
+    winNoteStatus.classList.toggle("hidden", !text);
   }
 
-  function startGame() {
-    flushPendingScore();
+  async function persistCatch(seconds) {
+    if (!window.ChaseScores) return null;
+    try {
+      const result = await window.ChaseScores.save(seconds, "");
+      const id = result && result.entry && result.entry.id;
+      if (id != null) {
+        savedScoreId = id;
+        pendingScore = null;
+      }
+      return result;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  async function submitWinMessage() {
+    if (messageSent) return true;
+    if (winMessageBtn) winMessageBtn.disabled = true;
+    setNoteStatus("Saving…");
+    if (savePromise) await savePromise;
+    const message = winMessageEl ? winMessageEl.value : "";
+    if (!window.ChaseScores) {
+      setNoteStatus("Could not save.");
+      if (winMessageBtn) winMessageBtn.disabled = false;
+      return false;
+    }
+    try {
+      let result = null;
+      if (savedScoreId != null) {
+        result = await window.ChaseScores.update(savedScoreId, message);
+      } else if (pendingScore != null) {
+        result = await window.ChaseScores.save(pendingScore, message);
+        savedScoreId = result && result.entry && result.entry.id;
+        pendingScore = null;
+      }
+      const ok = Boolean(result && result.remote);
+      messageSent = true;
+      setNoteStatus(ok ? "Saved. He still won't see it." : "Saved on this phone only.");
+      if (winMessageBtn) winMessageBtn.textContent = "Submitted";
+      return true;
+    } catch (_) {
+      setNoteStatus("Could not save. Try Submit again.");
+      if (winMessageBtn) winMessageBtn.disabled = false;
+      return false;
+    }
+  }
+
+  function flushPendingScore() {
+    if (messageSent || (pendingScore == null && savedScoreId == null) || !window.ChaseScores) return;
+    submitWinMessage();
+  }
+
+  async function startGame() {
+    if (!messageSent && (savedScoreId != null || pendingScore != null || savePromise)) {
+      await submitWinMessage();
+    }
+    pendingScore = null;
+    savedScoreId = null;
+    savePromise = null;
+    messageSent = false;
+    setNoteStatus("");
+    if (winMessageBtn) {
+      winMessageBtn.disabled = false;
+      winMessageBtn.textContent = "Submit";
+    }
     ensureAudio()?.resume();
     helpScreen.classList.add("hidden");
     helpScreen.setAttribute("hidden", "");
@@ -1670,6 +1744,7 @@
 
   document.getElementById("start-btn").addEventListener("click", startGame);
   document.getElementById("again-btn").addEventListener("click", startGame);
+  if (winMessageBtn) winMessageBtn.addEventListener("click", submitWinMessage);
   window.addEventListener("pagehide", flushPendingScore);
 
   window.addEventListener("resize", resize);
